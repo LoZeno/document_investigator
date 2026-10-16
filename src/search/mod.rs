@@ -233,11 +233,26 @@ mod tests {
         let raw_hits = engine.search_raw_hits(Some(lib.id), "tomatoes", 5).unwrap();
         assert!(!raw_hits.is_empty());
         assert!(raw_hits.iter().any(|h| h.filename == "Cooking.epub"));
+
+        // Global search (None library_id)
+        let global_res = engine.search(None, "Rust", 10).unwrap();
+        assert_eq!(global_res.len(), 1);
+        assert_eq!(global_res[0].filename, "RustGuide.pdf");
+
+        let global_raw = engine.search_raw_hits(None, "Rust", 10).unwrap();
+        assert!(!global_raw.is_empty());
     }
 
     #[test]
     fn test_open_nonexistent_file() {
         let res = open_document_at_page("/nonexistent/file.pdf", 1);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_open_existing_temp_file() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        // Since we are running in headless tests, we verify opening doesn't panic
+        let _ = open_document_at_page(temp_file.path(), 1);
     }
 }

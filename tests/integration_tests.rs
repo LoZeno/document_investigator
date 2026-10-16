@@ -4,6 +4,7 @@ use document_investigator::indexer::{Indexer, PasswordResponse};
 use document_investigator::parsers::{is_supported_file, parse_document};
 use document_investigator::search::SearchEngine;
 use document_investigator::security::{decrypt_password, encrypt_password, MemoryKeyProvider};
+use lopdf::dictionary;
 use std::fs::{self, File};
 use std::io::Write;
 use tempfile::tempdir;
@@ -210,4 +211,80 @@ fn test_all_file_format_parsers() {
     assert!(is_supported_file("test.azw3"));
     assert!(is_supported_file("test.lit"));
     assert!(is_supported_file("test.lrf"));
+}
+
+#[test]
+fn test_pdf_integration_and_page_search() {
+    let temp_root = tempdir().unwrap();
+    let pdf_path = temp_root.path().join("sample.pdf");
+
+    // Build minimal unencrypted PDF on disk using lopdf
+    let mut doc = lopdf::Document::with_version("1.5");
+    let pages_id = doc.new_object_id();
+    let font_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let resources_id = doc.add_object(lopdf::dictionary! {
+        "Font" => lopdf::dictionary! {
+            "F1" => font_id,
+        },
+    });
+    let content = lopdf::content::Content {
+        operations: vec![
+            lopdf::content::Operation::new("BT", vec![]),
+            lopdf::content::Operation::new("Tf", vec!["F1".into(), 12.into()]),
+            lopdf::content::Operation::new("Td", vec![100.into(), 100.into()]),
+            lopdf::content::Operation::new("Tj", vec![lopdf::Object::string_literal("Advanced Scientific Computing in Rust")]),
+            lopdf::content::Operation::new("ET", vec![]),
+        ],
+    };
+    let content_id = doc.add_object(lopdf::Stream::new(lopdf::dictionary! {}, content.encode().unwrap()));
+    let page_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Page",
+        "Parent" => pages_id,
+        "Contents" => content_id,
+        "Resources" => resources_id,
+        "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+    });
+    let pages = lopdf::dictionary! {
+        "Type" => "Pages",
+        "Kids" => vec![page_id.into()],
+        "Count" => 1,
+    };
+    doc.set_object(pages_id, pages);
+    let catalog_id = doc.add_object(lopdf::dictionary! {
+        "Type" => "Catalog",
+        "Pages" => pages_id,
+    });
+    doc.trailer.set("Root", catalog_id);
+    doc.save(&pdf_path).unwrap();
+
+    let db = Database::open_in_memory().unwrap();
+    let lib = db
+        .add_or_get_library("PDF Library", temp_root.path().to_str().unwrap())
+        .unwrap();
+
+    let key_provider = MemoryKeyProvider::random();
+    let emb_generator = Box::new(DeterministicEmbeddingGenerator::new(64));
+    let indexer = Indexer::new(db.clone(), emb_generator, key_provider);
+
+    let stats = indexer
+        .scan_and_index(lib.id, temp_root.path(), None, |_| PasswordResponse {
+            file_path: "".to_string(),
+            password: None,
+            save_for_future: false,
+        })
+        .unwrap();
+
+    assert_eq!(stats.indexed_count, 1);
+
+    let search_emb = Box::new(DeterministicEmbeddingGenerator::new(64));
+    let engine = SearchEngine::new(db, search_emb);
+
+    let hits = engine.search(Some(lib.id), "Scientific", 10).unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].filename, "sample.pdf");
+    assert_eq!(hits[0].matching_pages, vec![1]);
 }

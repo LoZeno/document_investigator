@@ -490,7 +490,59 @@ mod tests {
         // Test search triggering
         app.search_query = "Doc".to_string();
         app.trigger_search();
-        // Since no pages were inserted yet, search results are empty
         assert!(app.search_results.is_empty());
+
+        // Test background message channel processing
+        let (prog_tx, prog_rx) = channel();
+        let (req_tx, req_rx) = channel();
+        let (resp_tx, _resp_rx) = channel();
+
+        app.progress_rx = Some(prog_rx);
+        app.password_req_rx = Some(req_rx);
+        app.password_resp_tx = Some(resp_tx);
+
+        prog_tx.send(IndexingProgress::Started { total_files: 5 }).unwrap();
+        prog_tx.send(IndexingProgress::ScanningFile { current: 1, total: 5, file_path: "/test/docs/A_Doc.pdf".to_string() }).unwrap();
+        prog_tx.send(IndexingProgress::FileIndexed { current: 1, total: 5, file_path: "/test/docs/A_Doc.pdf".to_string() }).unwrap();
+        prog_tx.send(IndexingProgress::FileSkipped { current: 2, total: 5, file_path: "/test/docs/B_Doc.docx".to_string() }).unwrap();
+        prog_tx.send(IndexingProgress::Completed { indexed_count: 1, skipped_count: 1, error_count: 0 }).unwrap();
+
+        req_tx.send(PasswordRequest {
+            file_path: "/test/docs/Secret.pdf".to_string(),
+            filename: "Secret.pdf".to_string(),
+        }).unwrap();
+
+        app.update_background_channels();
+
+        assert!(!app.is_indexing);
+        assert!(app.indexing_status_text.contains("Indexing complete"));
+        assert_eq!(
+            app.pending_password_request,
+            Some(PasswordRequest {
+                file_path: "/test/docs/Secret.pdf".to_string(),
+                filename: "Secret.pdf".to_string(),
+            })
+        );
+
+        // Test error message handling
+        prog_tx.send(IndexingProgress::Error("Disk read error".to_string())).unwrap();
+        app.update_background_channels();
+        assert_eq!(app.error_message, Some("Disk read error".to_string()));
+
+        // Test clearing search
+        app.search_query.clear();
+        app.trigger_search();
+        assert!(app.search_results.is_empty());
+
+        // Test adding new library folder
+        let temp_lib_dir = tempfile::tempdir().unwrap();
+        app.add_library_folder(temp_lib_dir.path());
+        assert_eq!(app.libraries.len(), 2);
+
+        // Test library selection switch
+        app.selected_library_id = Some(lib.id);
+        app.reload_documents();
+        assert_eq!(app.selected_library_id, Some(lib.id));
+        assert_eq!(app.documents.len(), 2);
     }
 }

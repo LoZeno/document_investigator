@@ -338,6 +338,31 @@ impl Database {
         }
     }
 
+    pub fn delete_pages_for_document(&self, document_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        conn.execute(
+            "DELETE FROM document_pages WHERE document_id = ?",
+            params![document_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn delete_document(&self, document_id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
+        conn.execute(
+            "DELETE FROM document_pages WHERE document_id = ?",
+            params![document_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM documents WHERE id = ?",
+            params![document_id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn insert_page(
         &self,
         document_id: i64,
@@ -677,5 +702,59 @@ mod tests {
 
         let not_found_snippet = create_snippet(content, "cat");
         assert!(!not_found_snippet.is_empty());
+    }
+
+    #[test]
+    fn test_db_file_open_and_deletions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test_docs.duckdb");
+        let db = Database::open_file(&db_path).expect("Should open on-disk DB");
+
+        let lib = db.add_or_get_library("Disk Lib", "/path/disk").unwrap();
+        let doc_id = db
+            .upsert_document(
+                lib.id,
+                "DiskDoc.pdf",
+                "/path/disk/DiskDoc.pdf",
+                "pdf",
+                5555,
+                2048,
+                false,
+            )
+            .unwrap();
+
+        db.insert_page(doc_id, 1, "Page 1 disk text", None).unwrap();
+
+        let doc_found = db.get_document_by_path("/path/disk/DiskDoc.pdf").unwrap();
+        assert!(doc_found.is_some());
+
+        // Test delete document & pages
+        db.delete_document(doc_id).unwrap();
+        let doc_after_delete = db.get_document_by_path("/path/disk/DiskDoc.pdf").unwrap();
+        assert!(doc_after_delete.is_none());
+
+        let hits = db.search_text(Some(lib.id), "disk", 10).unwrap();
+        assert_eq!(hits.len(), 0);
+
+        // Test password update overwrite
+        db.save_password("/path/disk/DiskDoc.pdf", "pwd_1", "nonce_1").unwrap();
+        db.save_password("/path/disk/DiskDoc.pdf", "pwd_2", "nonce_2").unwrap();
+        let pwd = db.get_saved_password("/path/disk/DiskDoc.pdf").unwrap().unwrap();
+        assert_eq!(pwd.encrypted_password, "pwd_2");
+        assert_eq!(pwd.nonce, "nonce_2");
+
+        let non_existent_pwd = db.get_saved_password("/no/such/file").unwrap();
+        assert!(non_existent_pwd.is_none());
+    }
+
+    #[test]
+    fn test_cosine_similarity_edge_cases() {
+        let v_zero1 = vec![0.0, 0.0, 0.0];
+        let v_zero2 = vec![0.0, 0.0, 0.0];
+        assert_eq!(cosine_similarity(&v_zero1, &v_zero2), 0.0);
+
+        let v_diff_len1 = vec![1.0, 2.0];
+        let v_diff_len2 = vec![1.0, 2.0, 3.0];
+        assert_eq!(cosine_similarity(&v_diff_len1, &v_diff_len2), 0.0);
     }
 }

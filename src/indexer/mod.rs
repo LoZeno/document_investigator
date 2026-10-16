@@ -198,6 +198,8 @@ impl<K: KeyProvider> Indexer<K> {
                         }
                     };
 
+                    let _ = self.db.delete_pages_for_document(doc_id);
+
                     for page in doc.pages {
                         let emb = self
                             .embedding_gen
@@ -306,12 +308,61 @@ mod tests {
         assert_eq!(stats2.indexed_count, 0);
         assert_eq!(stats2.skipped_count, 2);
 
+        // Modify root_doc.html after timestamp difference
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let mut f1_mod = File::create(&html_path).unwrap();
+        writeln!(f1_mod, "<html><body><p>Updated text after modification.</p></body></html>").unwrap();
+
+        let stats3 = indexer
+            .scan_and_index(lib.id, temp_dir.path(), None, |_| PasswordResponse {
+                file_path: "".to_string(),
+                password: None,
+                save_for_future: false,
+            })
+            .unwrap();
+
+        assert_eq!(stats3.indexed_count, 1);
+        assert_eq!(stats3.skipped_count, 1);
+
+        // Verify updated content in DB
+        let hits = db.search_text(Some(lib.id), "Updated", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].snippet.contains("Updated text after modification"));
+
         // Progress messages verified
         let mut received = Vec::new();
         while let Ok(msg) = rx.try_recv() {
             received.push(msg);
         }
         assert!(!received.is_empty());
+    }
+
+    #[test]
+    fn test_indexer_corrupted_file_error_handling() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let bad_pdf = temp_dir.path().join("broken.pdf");
+        let mut f = File::create(&bad_pdf).unwrap();
+        writeln!(f, "Not a valid PDF header or stream").unwrap();
+
+        let db = Database::open_in_memory().unwrap();
+        let lib = db
+            .add_or_get_library("Bad Lib", temp_dir.path().to_str().unwrap())
+            .unwrap();
+
+        let key_prov = MemoryKeyProvider::random();
+        let emb_gen = Box::new(DeterministicEmbeddingGenerator::new(64));
+        let indexer = Indexer::new(db, emb_gen, key_prov);
+
+        let stats = indexer
+            .scan_and_index(lib.id, temp_dir.path(), None, |_| PasswordResponse {
+                file_path: "".to_string(),
+                password: None,
+                save_for_future: false,
+            })
+            .unwrap();
+
+        assert_eq!(stats.indexed_count, 0);
+        assert_eq!(stats.error_count, 1);
     }
 
     #[test]

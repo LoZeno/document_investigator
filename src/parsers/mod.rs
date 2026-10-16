@@ -776,6 +776,37 @@ mod tests {
     }
 
     #[test]
+    fn test_decompress_palmdoc_patterns() {
+        // Literal bytes (1..=8)
+        let data1 = vec![0x03, b'A', b'B', b'C'];
+        let out1 = decompress_palmdoc(&data1);
+        assert_eq!(out1, b"ABC");
+
+        // Space + char (0xC0..)
+        let data2 = vec![0x80 ^ b'X'];
+        let out2 = decompress_palmdoc(&data2);
+        assert_eq!(out2, b" X");
+
+        // Distance + length back-reference
+        // First push 'A', 'B', 'C', then back reference distance 3, length 3
+        let mut data3 = vec![0x03, b'A', b'B', b'C'];
+        let distance = 3usize;
+        let length = 3usize;
+        let b1 = 0x80 | ((distance >> 3) & 0x3F) as u8;
+        let b2 = (((distance & 0x07) << 5) | (length - 3)) as u8;
+        data3.push(b1);
+        data3.push(b2);
+        let out3 = decompress_palmdoc(&data3);
+        assert_eq!(out3, b"ABCABC");
+    }
+
+    #[test]
+    fn test_mobi_header_too_short() {
+        let short_data = b"BOOKMOBI";
+        assert!(try_extract_mobi_text(short_data).is_none());
+    }
+
+    #[test]
     fn test_parse_error_display() {
         assert_eq!(
             ParseError::PasswordRequired.to_string(),
