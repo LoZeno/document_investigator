@@ -10,8 +10,24 @@ pub struct DocumentSearchResult {
     pub file_path: String,
     pub matching_pages: Vec<i32>,
     pub snippets: Vec<String>,
+    pub page_snippets: HashMap<i32, String>,
     pub max_score: f32,
     pub has_semantic_matches: bool,
+}
+
+impl DocumentSearchResult {
+    pub fn get_snippet_for_page(&self, page: i32) -> Option<&str> {
+        self.page_snippets.get(&page).map(|s| s.as_str())
+    }
+
+    pub fn get_default_snippet(&self) -> Option<&str> {
+        if let Some(&first_page) = self.matching_pages.first() {
+            if let Some(snip) = self.get_snippet_for_page(first_page) {
+                return Some(snip);
+            }
+        }
+        self.snippets.first().map(|s| s.as_str())
+    }
 }
 
 pub struct SearchEngine {
@@ -55,6 +71,7 @@ impl SearchEngine {
                 file_path: hit.file_path.clone(),
                 matching_pages: Vec::new(),
                 snippets: Vec::new(),
+                page_snippets: HashMap::new(),
                 max_score: 1.0,
                 has_semantic_matches: false,
             });
@@ -62,9 +79,10 @@ impl SearchEngine {
             if !entry.matching_pages.contains(&hit.page_number) {
                 entry.matching_pages.push(hit.page_number);
             }
-            if entry.snippets.len() < 3 && !entry.snippets.contains(&hit.snippet) {
-                entry.snippets.push(hit.snippet);
+            if entry.snippets.len() < 5 && !entry.snippets.contains(&hit.snippet) {
+                entry.snippets.push(hit.snippet.clone());
             }
+            entry.page_snippets.entry(hit.page_number).or_insert(hit.snippet);
         }
 
         for hit in semantic_hits {
@@ -74,6 +92,7 @@ impl SearchEngine {
                 file_path: hit.file_path.clone(),
                 matching_pages: Vec::new(),
                 snippets: Vec::new(),
+                page_snippets: HashMap::new(),
                 max_score: hit.score,
                 has_semantic_matches: true,
             });
@@ -86,9 +105,10 @@ impl SearchEngine {
             if !entry.matching_pages.contains(&hit.page_number) {
                 entry.matching_pages.push(hit.page_number);
             }
-            if entry.snippets.len() < 3 && !entry.snippets.contains(&hit.snippet) {
-                entry.snippets.push(hit.snippet);
+            if entry.snippets.len() < 5 && !entry.snippets.contains(&hit.snippet) {
+                entry.snippets.push(hit.snippet.clone());
             }
+            entry.page_snippets.entry(hit.page_number).or_insert(hit.snippet);
         }
 
         let mut results: Vec<DocumentSearchResult> = doc_map.into_values().collect();
@@ -219,6 +239,10 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].filename, "RustGuide.pdf");
         assert_eq!(results[0].matching_pages, vec![1, 2]);
+        assert!(results[0].get_snippet_for_page(1).unwrap().contains("safety"));
+        assert!(results[0].get_snippet_for_page(2).unwrap().contains("Concurrency"));
+        assert_eq!(results[0].get_default_snippet(), results[0].get_snippet_for_page(1));
+        assert!(results[0].get_snippet_for_page(99).is_none());
 
         // Semantic query for "systems programming"
         let sem_results = engine.search(Some(lib.id), "systems programming", 10).unwrap();

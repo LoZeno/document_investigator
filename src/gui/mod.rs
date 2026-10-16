@@ -4,6 +4,7 @@ use crate::indexer::{Indexer, IndexingProgress, PasswordRequest, PasswordRespons
 use crate::search::{open_document_at_page, DocumentSearchResult, SearchEngine};
 use crate::security::KeyringProvider;
 use eframe::egui;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -15,6 +16,7 @@ pub struct DocumentInvestigatorApp {
     pub documents: Vec<DocumentRecord>,
     pub search_query: String,
     pub search_results: Vec<DocumentSearchResult>,
+    pub selected_page_per_doc: HashMap<i64, i32>,
     pub search_engine: SearchEngine,
     pub is_indexing: bool,
     pub indexing_status_text: String,
@@ -43,6 +45,7 @@ impl DocumentInvestigatorApp {
             documents: Vec::new(),
             search_query: String::new(),
             search_results: Vec::new(),
+            selected_page_per_doc: HashMap::new(),
             search_engine,
             is_indexing: false,
             indexing_status_text: String::new(),
@@ -146,6 +149,7 @@ impl DocumentInvestigatorApp {
 
     pub fn trigger_search(&mut self) {
         let query = self.search_query.trim();
+        self.selected_page_per_doc.clear();
         if query.is_empty() {
             self.search_results.clear();
             return;
@@ -298,6 +302,7 @@ impl eframe::App for DocumentInvestigatorApp {
                     if ui.button("❌ Clear").clicked() {
                         self.search_query.clear();
                         self.search_results.clear();
+                        self.selected_page_per_doc.clear();
                     }
                 }
 
@@ -332,44 +337,98 @@ impl eframe::App for DocumentInvestigatorApp {
 
                     egui::Grid::new("search_results_grid")
                         .striped(true)
-                        .spacing([12.0, 8.0])
+                        .spacing([14.0, 10.0])
                         .min_col_width(80.0)
                         .show(ui, |ui| {
                             ui.strong("Filename");
                             ui.strong("Path");
-                            ui.strong("Matches / Pages");
-                            ui.strong("Snippets");
+                            ui.strong("Snippet");
                             ui.strong("Actions");
                             ui.end_row();
 
                             for res in &self.search_results {
-                                ui.label(&res.filename);
+                                let mut hovered_page: Option<i32> = None;
+                                let mut clicked_page: Option<i32> = None;
+
+                                // Column 1: Filename with page numbers UNDER it
+                                ui.vertical(|ui| {
+                                    ui.label(egui::RichText::new(&res.filename).strong());
+                                    if !res.matching_pages.is_empty() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("Pages:")
+                                                    .small()
+                                                    .color(egui::Color32::from_gray(140)),
+                                            );
+                                            for &page in &res.matching_pages {
+                                                let is_selected = self
+                                                    .selected_page_per_doc
+                                                    .get(&res.document_id)
+                                                    == Some(&page);
+                                                let btn_text = format!("p. {page}");
+                                                let btn = if is_selected {
+                                                    egui::Button::new(
+                                                        egui::RichText::new(btn_text)
+                                                            .strong()
+                                                            .color(egui::Color32::LIGHT_BLUE),
+                                                    )
+                                                } else {
+                                                    egui::Button::new(btn_text)
+                                                };
+                                                let resp = ui.add(btn);
+                                                if resp.hovered() {
+                                                    hovered_page = Some(page);
+                                                }
+                                                if resp.clicked() {
+                                                    clicked_page = Some(page);
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+
+                                if let Some(page) = clicked_page {
+                                    self.selected_page_per_doc.insert(res.document_id, page);
+                                    let _ = open_document_at_page(&res.file_path, page);
+                                }
+
+                                // Column 2: File Path
                                 ui.label(&res.file_path);
 
-                                // Matching pages links
-                                ui.horizontal(|ui| {
-                                    if res.matching_pages.is_empty() {
-                                        ui.label("Matched");
-                                    } else {
-                                        for &page in &res.matching_pages {
-                                            if ui.small_button(format!("p. {page}")).clicked() {
-                                                let _ = open_document_at_page(&res.file_path, page);
-                                            }
-                                        }
-                                    }
-                                });
+                                // Column 3: Snippet (Wider column, showing hovered page snippet or clicked page snippet or first page snippet)
+                                let active_page = hovered_page
+                                    .or_else(|| self.selected_page_per_doc.get(&res.document_id).copied())
+                                    .or_else(|| res.matching_pages.first().copied());
 
-                                // Snippets
+                                let snippet_text = active_page
+                                    .and_then(|p| res.get_snippet_for_page(p))
+                                    .or_else(|| res.get_default_snippet())
+                                    .unwrap_or("No snippet available");
+
                                 ui.vertical(|ui| {
-                                    for snip in &res.snippets {
-                                        ui.label(egui::RichText::new(snip).italics());
+                                    ui.set_min_width(420.0);
+                                    ui.set_max_width(650.0);
+                                    if let Some(p) = active_page {
+                                        ui.label(
+                                            egui::RichText::new(format!("Page {p}:"))
+                                                .small()
+                                                .color(egui::Color32::from_gray(150)),
+                                        );
                                     }
+                                    ui.add(egui::Label::new(egui::RichText::new(snippet_text).italics()).wrap());
                                 });
 
-                                // Open document button
-                                if ui.button("Open Document").clicked() {
-                                    let _ = open_document_at_page(&res.file_path, 1);
-                                }
+                                // Column 4: Actions
+                                ui.vertical(|ui| {
+                                    if ui.button("Open Document").clicked() {
+                                        let target_page = self
+                                            .selected_page_per_doc
+                                            .get(&res.document_id)
+                                            .copied()
+                                            .unwrap_or(1);
+                                        let _ = open_document_at_page(&res.file_path, target_page);
+                                    }
+                                });
 
                                 ui.end_row();
                             }
@@ -544,5 +603,30 @@ mod tests {
         app.reload_documents();
         assert_eq!(app.selected_library_id, Some(lib.id));
         assert_eq!(app.documents.len(), 2);
+
+        // Test search result snippet and page selection state
+        let sample_res = DocumentSearchResult {
+            document_id: 1,
+            filename: "Doc1.pdf".to_string(),
+            file_path: "/test/Doc1.pdf".to_string(),
+            matching_pages: vec![1, 3],
+            snippets: vec!["Page 1 snippet".to_string(), "Page 3 snippet".to_string()],
+            page_snippets: HashMap::from([
+                (1, "Page 1 snippet".to_string()),
+                (3, "Page 3 snippet".to_string()),
+            ]),
+            max_score: 1.0,
+            has_semantic_matches: false,
+        };
+        app.search_results = vec![sample_res.clone()];
+        assert_eq!(sample_res.get_default_snippet(), Some("Page 1 snippet"));
+        assert_eq!(sample_res.get_snippet_for_page(3), Some("Page 3 snippet"));
+
+        app.selected_page_per_doc.insert(1, 3);
+        assert_eq!(app.selected_page_per_doc.get(&1), Some(&3));
+
+        app.search_query.clear();
+        app.trigger_search();
+        assert!(app.selected_page_per_doc.is_empty());
     }
 }
