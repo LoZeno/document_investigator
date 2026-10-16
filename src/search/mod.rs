@@ -21,11 +21,10 @@ impl DocumentSearchResult {
     }
 
     pub fn get_default_snippet(&self) -> Option<&str> {
-        if let Some(&first_page) = self.matching_pages.first() {
-            if let Some(snip) = self.get_snippet_for_page(first_page) {
+        if let Some(&first_page) = self.matching_pages.first()
+            && let Some(snip) = self.get_snippet_for_page(first_page) {
                 return Some(snip);
             }
-        }
         self.snippets.first().map(|s| s.as_str())
     }
 }
@@ -155,15 +154,14 @@ impl SearchEngine {
 
         let mut hits = self.db.search_text(library_id, trimmed, limit)?;
 
-        if let Ok(query_emb) = self.embedding_gen.generate_embedding(trimmed) {
-            if let Ok(sem_hits) = self.db.search_semantic(library_id, &query_emb, limit) {
+        if let Ok(query_emb) = self.embedding_gen.generate_embedding(trimmed)
+            && let Ok(sem_hits) = self.db.search_semantic(library_id, &query_emb, limit) {
                 for sem in sem_hits {
                     if !hits.iter().any(|h| h.document_id == sem.document_id && h.page_number == sem.page_number) {
                         hits.push(sem);
                     }
                 }
             }
-        }
 
         hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(limit);

@@ -30,10 +30,16 @@ jobs:
             target: aarch64-apple-darwin
             binary_name: document_investigator
             asset_name: document_investigator-macos-arm64.zip
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             binary_name: document_investigator
             asset_name: document_investigator-macos-x86_64.zip
+
+    env:
+      CARGO_INCREMENTAL: 0
+      RUST_BACKTRACE: 1
+      PreferredToolArchitecture: x64
+      _CL_: "/bigobj /MP"
 
     steps:
       - name: Checkout repository

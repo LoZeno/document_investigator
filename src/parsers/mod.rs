@@ -141,8 +141,8 @@ pub fn parse_pdf_bytes(
             doc.extract_text(&[page_num]).unwrap_or_else(|_| {
                 // Fallback manual content stream extraction for page
                 let mut page_text = String::new();
-                if let Ok(content_data) = doc.get_page_content(page_id) {
-                    if let Ok(content) = lopdf::content::Content::decode(&content_data) {
+                if let Ok(content_data) = doc.get_page_content(page_id)
+                    && let Ok(content) = lopdf::content::Content::decode(&content_data) {
                         for op in content.operations {
                             if op.operator == "Tj" || op.operator == "TJ" {
                                 for operand in op.operands {
@@ -154,7 +154,6 @@ pub fn parse_pdf_bytes(
                             }
                         }
                     }
-                }
                 page_text
             })
         })).unwrap_or_default();
@@ -197,17 +196,15 @@ fn extract_pdf_via_cli<P: AsRef<Path>>(
         let output_path = temp_txt.path().to_path_buf();
 
         cmd.arg(path.as_ref()).arg(&output_path);
-        if let Ok(status) = cmd.status() {
-            if status.success() {
-                if let Ok(content) = std::fs::read_to_string(&output_path) {
+        if let Ok(status) = cmd.status()
+            && status.success()
+                && let Ok(content) = std::fs::read_to_string(&output_path) {
                     let pages = split_text_into_logical_pages(&content, 2000);
                     return Ok(ExtractedDocument {
                         pages,
                         is_encrypted: password.is_some(),
                     });
                 }
-            }
-        }
     }
     Err(ParseError::FormatError("CLI PDF extraction unavailable or failed".to_string()))
 }
@@ -305,14 +302,13 @@ pub fn parse_epub_bytes(bytes: &[u8]) -> Result<ExtractedDocument, ParseError> {
 
     let mut file_names: Vec<String> = Vec::new();
     for i in 0..archive.len() {
-        if let Ok(file) = archive.by_index(i) {
-            if let Ok(name_cow) = file.name() {
+        if let Ok(file) = archive.by_index(i)
+            && let Ok(name_cow) = file.name() {
                 let name = name_cow.to_string();
                 if name.ends_with(".xhtml") || name.ends_with(".html") || name.ends_with(".htm") {
                     file_names.push(name);
                 }
             }
-        }
     }
 
     file_names.sort();
@@ -416,17 +412,15 @@ fn parse_hybrid_ebook_file<P: AsRef<Path>>(path: P) -> Result<ExtractedDocument,
             .arg(temp_txt.path())
             .output();
 
-        if let Ok(output) = status {
-            if output.status.success() {
-                if let Ok(text) = std::fs::read_to_string(temp_txt.path()) {
+        if let Ok(output) = status
+            && output.status.success()
+                && let Ok(text) = std::fs::read_to_string(temp_txt.path()) {
                     let pages = split_text_into_logical_pages(&text, 2500);
                     return Ok(ExtractedDocument {
                         pages,
                         is_encrypted: false,
                     });
                 }
-            }
-        }
     }
 
     // Strategy 2: Pure Rust fallback (PalmDOC unpacker or printable text stream extractor)
@@ -438,41 +432,36 @@ fn parse_hybrid_ebook_file<P: AsRef<Path>>(path: P) -> Result<ExtractedDocument,
 
 pub fn parse_raw_text_stream_fallback(bytes: &[u8]) -> Result<ExtractedDocument, ParseError> {
     // Attempt PalmDOC / MOBI decompression if header matches
-    if bytes.len() > 78 && &bytes[60..68] == b"BOOKMOBI" {
-        if let Some(text) = try_extract_mobi_text(bytes) {
+    if bytes.len() > 78 && &bytes[60..68] == b"BOOKMOBI"
+        && let Some(text) = try_extract_mobi_text(bytes) {
             let pages = split_text_into_logical_pages(&text, 2500);
             return Ok(ExtractedDocument {
                 pages,
                 is_encrypted: false,
             });
         }
-    }
 
     // Generic fallback: Extract consecutive ASCII/UTF-8 readable sequences
     let mut collected = String::new();
     let mut current_word = Vec::new();
 
     for &b in bytes {
-        if b >= 32 && b <= 126 || b == b'\n' || b == b'\r' || b == b'\t' {
-            current_word.push(b);
-        } else if b >= 128 {
+        if (32..=126).contains(&b) || b == b'\n' || b == b'\r' || b == b'\t' || b >= 128 {
             current_word.push(b);
         } else {
-            if current_word.len() >= 4 {
-                if let Ok(s) = std::str::from_utf8(&current_word) {
+            if current_word.len() >= 4
+                && let Ok(s) = std::str::from_utf8(&current_word) {
                     collected.push_str(s);
                     collected.push(' ');
                 }
-            }
             current_word.clear();
         }
     }
 
-    if current_word.len() >= 4 {
-        if let Ok(s) = std::str::from_utf8(&current_word) {
+    if current_word.len() >= 4
+        && let Ok(s) = std::str::from_utf8(&current_word) {
             collected.push_str(s);
         }
-    }
 
     let pages = split_text_into_logical_pages(&collected, 2500);
     Ok(ExtractedDocument {
@@ -532,7 +521,7 @@ fn decompress_palmdoc(data: &[u8]) -> Vec<u8> {
     while i < data.len() {
         let b = data[i];
         i += 1;
-        if b >= 1 && b <= 8 {
+        if (1..=8).contains(&b) {
             // Literal next b bytes
             let count = b as usize;
             for _ in 0..count {
@@ -553,8 +542,8 @@ fn decompress_palmdoc(data: &[u8]) -> Vec<u8> {
             if i < data.len() {
                 let b2 = data[i];
                 i += 1;
-                let distance = (((b as usize & 0x3F) << 3) | ((b2 as usize) >> 5)) as usize;
-                let length = ((b2 as usize & 0x1F) + 3) as usize;
+                let distance = ((b as usize & 0x3F) << 3) | ((b2 as usize) >> 5);
+                let length = (b2 as usize & 0x1F) + 3;
                 if distance > 0 && distance <= out.len() {
                     let start = out.len() - distance;
                     for j in 0..length {
@@ -604,8 +593,8 @@ pub fn strip_html_tags(html: &str) -> String {
     let mut in_script_or_style = false;
     let mut current_tag = String::new();
 
-    let mut chars = html.chars().peekable();
-    while let Some(c) = chars.next() {
+    let chars = html.chars();
+    for c in chars {
         if c == '<' {
             in_tag = true;
             current_tag.clear();

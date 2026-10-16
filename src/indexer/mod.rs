@@ -132,23 +132,21 @@ impl<K: KeyProvider> Indexer<K> {
                     .unwrap_or_default();
 
                 // Check if document already indexed and unchanged
-                if let Ok(Some(existing)) = self.db.get_document_by_path(&path_str) {
-                    if existing.modified_time == modified_time && existing.indexed_at.is_some() {
+                if let Ok(Some(existing)) = self.db.get_document_by_path(&path_str)
+                    && existing.modified_time == modified_time && existing.indexed_at.is_some() {
                         return ProcessResult::Skipped;
                     }
-                }
 
                 // Attempt initial parse without password or with saved password
                 let mut password_to_use: Option<String> = None;
-                if let Ok(Some(saved)) = self.db.get_saved_password(&path_str) {
-                    if let Ok(decrypted) = decrypt_password(
+                if let Ok(Some(saved)) = self.db.get_saved_password(&path_str)
+                    && let Ok(decrypted) = decrypt_password(
                         &saved.encrypted_password,
                         &saved.nonce,
                         &master_key,
                     ) {
                         password_to_use = Some(decrypted);
                     }
-                }
 
                 let mut parse_res = parse_document(&file_path, password_to_use.as_deref());
 
@@ -165,15 +163,14 @@ impl<K: KeyProvider> Indexer<K> {
 
                     let resp = password_handler(&req);
                     if let Some(pwd) = resp.password {
-                        if resp.save_for_future {
-                            if let Ok(encrypted) = encrypt_password(&pwd, &master_key) {
+                        if resp.save_for_future
+                            && let Ok(encrypted) = encrypt_password(&pwd, &master_key) {
                                 let _ = self.db.save_password(
                                     &path_str,
                                     &encrypted.ciphertext_hex,
                                     &encrypted.nonce_hex,
                                 );
                             }
-                        }
                         parse_res = parse_document(&file_path, Some(&pwd));
                     }
                 }

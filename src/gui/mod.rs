@@ -177,12 +177,11 @@ impl DocumentInvestigatorApp {
     }
 
     pub fn update_background_channels(&mut self) {
-        if let Some(ref rx) = self.password_req_rx {
-            if let Ok(req) = rx.try_recv() {
+        if let Some(ref rx) = self.password_req_rx
+            && let Ok(req) = rx.try_recv() {
                 self.pending_password_request = Some(req);
                 self.password_input.clear();
             }
-        }
 
         let mut should_reload = false;
         let mut channel_closed = false;
@@ -298,21 +297,19 @@ impl eframe::App for DocumentInvestigatorApp {
                 }
 
                 // Add Library Button
-                if ui.button("➕ Add Library Folder").clicked() {
-                    if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                if ui.button("➕ Add Library Folder").clicked()
+                    && let Some(folder) = rfd::FileDialog::new().pick_folder() {
                         self.add_library_folder(folder);
                     }
-                }
 
                 // Refresh Button
                 if let Some(lib_id) = self.selected_library_id {
                     let btn = ui.add_enabled(!self.is_indexing, egui::Button::new("🔄 Refresh"));
-                    if btn.clicked() {
-                        if let Some(lib) = self.libraries.iter().find(|l| l.id == lib_id) {
+                    if btn.clicked()
+                        && let Some(lib) = self.libraries.iter().find(|l| l.id == lib_id) {
                             let path = PathBuf::from(&lib.path);
                             self.start_indexing(lib_id, path);
                         }
-                    }
                 }
 
                 if self.is_indexing {
@@ -335,13 +332,12 @@ impl eframe::App for DocumentInvestigatorApp {
                     self.trigger_search();
                 }
 
-                if !self.search_query.is_empty() {
-                    if ui.button("❌ Clear").clicked() {
+                if !self.search_query.is_empty()
+                    && ui.button("❌ Clear").clicked() {
                         self.search_query.clear();
                         self.search_results.clear();
                         self.selected_page_per_doc.clear();
                     }
-                }
 
                 if !self.search_results.is_empty() {
                     ui.label(format!("Found {} matching document(s)", self.search_results.len()));
@@ -496,7 +492,7 @@ impl eframe::App for DocumentInvestigatorApp {
                                 for doc in &self.documents {
                                     ui.label(&doc.filename);
                                     ui.label(&doc.file_path);
-                                    ui.label(&doc.file_extension.to_uppercase());
+                                    ui.label(doc.file_extension.to_uppercase());
                                     ui.label(format!("{:.1} KB", doc.file_size as f64 / 1024.0));
                                     ui.label(if doc.is_encrypted { "🔒 Yes" } else { "No" });
 

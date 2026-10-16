@@ -262,6 +262,7 @@ impl Database {
         Ok(doc)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_document(
         &self,
         library_id: i64,
@@ -435,7 +436,7 @@ impl Database {
         let conn = self.conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
         let pattern = format!("%{}%", query.to_lowercase());
 
-        let sql = if let Some(_) = library_id {
+        let sql = if library_id.is_some() {
             r#"
             SELECT d.id, d.filename, d.file_path, p.page_number, p.content
             FROM document_pages p
@@ -495,7 +496,7 @@ impl Database {
     ) -> Result<Vec<SearchHit>, String> {
         let conn = self.conn.lock().map_err(|e| format!("DB lock error: {e}"))?;
 
-        let sql = if let Some(_) = library_id {
+        let sql = if library_id.is_some() {
             r#"
             SELECT d.id, d.filename, d.file_path, p.page_number, p.content, p.embedding_json
             FROM document_pages p
@@ -528,8 +529,8 @@ impl Database {
             let content: String = row.get(4).map_err(|e| e.to_string())?;
             let emb_json: Option<String> = row.get(5).ok();
 
-            if let Some(json) = emb_json {
-                if let Ok(emb) = serde_json::from_str::<Vec<f32>>(&json) {
+            if let Some(json) = emb_json
+                && let Ok(emb) = serde_json::from_str::<Vec<f32>>(&json) {
                     let sim = cosine_similarity(query_embedding, &emb);
                     if sim > 0.25 {
                         let snippet = if content.chars().count() > 180 {
@@ -550,7 +551,6 @@ impl Database {
                         });
                     }
                 }
-            }
         }
 
         scored_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
