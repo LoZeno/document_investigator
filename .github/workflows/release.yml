@@ -38,8 +38,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
       RUST_BACKTRACE: 1
-      PreferredToolArchitecture: x64
-      _CL_: "/bigobj /MP"
+      _CL_: /bigobj
 
     steps:
       - name: Checkout repository
@@ -63,6 +62,12 @@ jobs:
             libgl1-mesa-dev \
             libdbus-1-dev \
             libasound2-dev
+
+      - name: Set up MSVC Developer Command Prompt
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@stable
