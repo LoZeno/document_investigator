@@ -63,21 +63,27 @@ impl SearchEngine {
 
         // 3. Merge & Aggregate by Document
         let mut doc_map: HashMap<i64, DocumentSearchResult> = HashMap::new();
+        let query_lower = trimmed.to_lowercase();
 
         for hit in text_hits {
-            let entry = doc_map.entry(hit.document_id).or_insert_with(|| DocumentSearchResult {
-                document_id: hit.document_id,
-                filename: hit.filename.clone(),
-                file_path: hit.file_path.clone(),
-                matching_pages: Vec::new(),
-                snippets: Vec::new(),
-                page_snippets: HashMap::new(),
-                max_score: 1.0,
-                has_semantic_matches: false,
+            let entry = doc_map.entry(hit.document_id).or_insert_with(|| {
+                let filename_match = hit.filename.to_lowercase().contains(&query_lower);
+                let initial_score = if filename_match { 1.5 } else { 1.0 };
+                DocumentSearchResult {
+                    document_id: hit.document_id,
+                    filename: hit.filename.clone(),
+                    file_path: hit.file_path.clone(),
+                    matching_pages: Vec::new(),
+                    snippets: Vec::new(),
+                    page_snippets: HashMap::new(),
+                    max_score: initial_score,
+                    has_semantic_matches: false,
+                }
             });
 
             if !entry.matching_pages.contains(&hit.page_number) {
                 entry.matching_pages.push(hit.page_number);
+                entry.max_score += 0.05;
             }
             if entry.snippets.len() < 5 && !entry.snippets.contains(&hit.snippet) {
                 entry.snippets.push(hit.snippet.clone());
@@ -86,19 +92,27 @@ impl SearchEngine {
         }
 
         for hit in semantic_hits {
-            let entry = doc_map.entry(hit.document_id).or_insert_with(|| DocumentSearchResult {
-                document_id: hit.document_id,
-                filename: hit.filename.clone(),
-                file_path: hit.file_path.clone(),
-                matching_pages: Vec::new(),
-                snippets: Vec::new(),
-                page_snippets: HashMap::new(),
-                max_score: hit.score,
-                has_semantic_matches: true,
+            let entry = doc_map.entry(hit.document_id).or_insert_with(|| {
+                let filename_match = hit.filename.to_lowercase().contains(&query_lower);
+                let initial_score = if filename_match { hit.score + 0.5 } else { hit.score };
+                DocumentSearchResult {
+                    document_id: hit.document_id,
+                    filename: hit.filename.clone(),
+                    file_path: hit.file_path.clone(),
+                    matching_pages: Vec::new(),
+                    snippets: Vec::new(),
+                    page_snippets: HashMap::new(),
+                    max_score: initial_score,
+                    has_semantic_matches: true,
+                }
             });
 
-            if hit.score > entry.max_score {
-                entry.max_score = hit.score;
+            if entry.has_semantic_matches {
+                if hit.score > entry.max_score {
+                    entry.max_score = hit.score;
+                }
+            } else {
+                entry.max_score += hit.score * 0.5;
             }
             entry.has_semantic_matches = true;
 
@@ -116,6 +130,7 @@ impl SearchEngine {
             res.matching_pages.sort();
         }
 
+        // Closest matches (highest score) on top, furthest matches at bottom
         results.sort_by(|a, b| {
             b.max_score
                 .partial_cmp(&a.max_score)
@@ -265,6 +280,50 @@ mod tests {
 
         let global_raw = engine.search_raw_hits(None, "Rust", 10).unwrap();
         assert!(!global_raw.is_empty());
+    }
+
+    #[test]
+    fn test_search_ranking_closest_to_furthest() {
+        let db = Database::open_in_memory().unwrap();
+        let lib = db.add_or_get_library("RankLib", "/lib").unwrap();
+
+        // Doc 1: Exact filename match and content match (Highest relevance)
+        let doc1 = db
+            .upsert_document(lib.id, "RustProgramming.pdf", "/lib/RustProgramming.pdf", "pdf", 100, 1000, false)
+            .unwrap();
+        // Doc 2: Multiple content matches (High relevance)
+        let doc2 = db
+            .upsert_document(lib.id, "SystemsLanguage.pdf", "/lib/SystemsLanguage.pdf", "pdf", 100, 1000, false)
+            .unwrap();
+        // Doc 3: Single weak/distant match
+        let doc3 = db
+            .upsert_document(lib.id, "OtherDoc.pdf", "/lib/OtherDoc.pdf", "pdf", 100, 1000, false)
+            .unwrap();
+
+        let emb_gen = DeterministicEmbeddingGenerator::new(64);
+        let emb1 = emb_gen.generate_embedding("Rust programming language").unwrap();
+        let emb2 = emb_gen.generate_embedding("Rust memory management").unwrap();
+        let emb3 = emb_gen.generate_embedding("General overview of computing").unwrap();
+
+        db.insert_page(doc1, 1, "Rust programming is fast and secure.", Some(&emb1)).unwrap();
+        db.insert_page(doc2, 1, "This book covers Rust concepts.", Some(&emb2)).unwrap();
+        db.insert_page(doc2, 2, "More Rust examples and exercises.", Some(&emb2)).unwrap();
+        db.insert_page(doc3, 1, "A fleeting mention of Rust in history.", Some(&emb3)).unwrap();
+
+        let engine = SearchEngine::new(db, Box::new(emb_gen));
+        let results = engine.search(Some(lib.id), "Rust", 10).unwrap();
+
+        assert_eq!(results.len(), 3);
+        // Closest match on top (filename match + exact text)
+        assert_eq!(results[0].filename, "RustProgramming.pdf");
+        // Next closest (multiple pages matching)
+        assert_eq!(results[1].filename, "SystemsLanguage.pdf");
+        // Furthest match at bottom
+        assert_eq!(results[2].filename, "OtherDoc.pdf");
+
+        // Verify score monotonicity (descending order)
+        assert!(results[0].max_score >= results[1].max_score);
+        assert!(results[1].max_score >= results[2].max_score);
     }
 
     #[test]

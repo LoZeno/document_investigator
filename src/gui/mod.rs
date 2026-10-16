@@ -350,9 +350,14 @@ impl eframe::App for DocumentInvestigatorApp {
                                 let mut hovered_page: Option<i32> = None;
                                 let mut clicked_page: Option<i32> = None;
 
-                                // Column 1: Filename with page numbers UNDER it
+                                // Column 1: Filename
                                 ui.vertical(|ui| {
                                     ui.label(egui::RichText::new(&res.filename).strong());
+                                });
+
+                                // Column 2: File Path with page numbers UNDER it
+                                ui.vertical(|ui| {
+                                    ui.label(&res.file_path);
                                     if !res.matching_pages.is_empty() {
                                         ui.horizontal_wrapped(|ui| {
                                             ui.label(
@@ -391,9 +396,6 @@ impl eframe::App for DocumentInvestigatorApp {
                                     self.selected_page_per_doc.insert(res.document_id, page);
                                     let _ = open_document_at_page(&res.file_path, page);
                                 }
-
-                                // Column 2: File Path
-                                ui.label(&res.file_path);
 
                                 // Column 3: Snippet (Wider column, showing hovered page snippet or clicked page snippet or first page snippet)
                                 let active_page = hovered_page
