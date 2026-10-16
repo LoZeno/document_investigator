@@ -1,4 +1,3 @@
-use lopdf::dictionary;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use std::io::{Cursor, Read};
@@ -603,6 +602,7 @@ pub fn split_text_into_logical_pages(text: &str, chars_per_page: usize) -> Vec<E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::dictionary;
     use std::io::Write;
     use zip::write::{SimpleFileOptions, ZipWriter};
 
