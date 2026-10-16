@@ -1,1 +1,6 @@
 /target
+.fastembed_cache/
+.idea/
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
