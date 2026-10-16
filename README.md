@@ -89,4 +89,4 @@ cargo test
 
 ## License
 
-MIT License or Apache 2.0 (Dual Licensed).
+GNU General Public License v3.0 (GPL-3.0). See the [LICENSE](LICENSE) file for details.
