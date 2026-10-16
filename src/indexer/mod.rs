@@ -86,6 +86,12 @@ impl<K: KeyProvider> Indexer<K> {
             .get_or_create_master_key()
             .unwrap_or([0u8; 32]);
 
+        enum ProcessResult {
+            Indexed,
+            Skipped,
+            Error,
+        }
+
         for (idx, file_path) in candidate_files.into_iter().enumerate() {
             let current = idx + 1;
             let path_str = file_path.to_string_lossy().to_string();
@@ -98,121 +104,117 @@ impl<K: KeyProvider> Indexer<K> {
                 });
             }
 
-            let metadata = match fs::metadata(&file_path) {
-                Ok(m) => m,
-                Err(_) => {
-                    stats.error_count += 1;
-                    continue;
-                }
-            };
-
-            let modified_time = metadata
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-
-            let file_size = metadata.len() as i64;
-            let filename = file_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            let file_extension = file_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
-
-            // Check if document already indexed and unchanged
-            if let Ok(Some(existing)) = self.db.get_document_by_path(&path_str) {
-                if existing.modified_time == modified_time && existing.indexed_at.is_some() {
-                    stats.skipped_count += 1;
-                    if let Some(tx) = progress_sender {
-                        let _ = tx.send(IndexingProgress::FileSkipped {
-                            current,
-                            total: total_files,
-                            file_path: path_str,
-                        });
+            let file_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let metadata = match fs::metadata(&file_path) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        return ProcessResult::Error;
                     }
-                    continue;
-                }
-            }
-
-            // Attempt initial parse without password or with saved password
-            let mut password_to_use: Option<String> = None;
-            if let Ok(Some(saved)) = self.db.get_saved_password(&path_str) {
-                if let Ok(decrypted) = decrypt_password(
-                    &saved.encrypted_password,
-                    &saved.nonce,
-                    &master_key,
-                ) {
-                    password_to_use = Some(decrypted);
-                }
-            }
-
-            let mut parse_res = parse_document(&file_path, password_to_use.as_deref());
-
-            // Handle password prompt if encrypted
-            if matches!(parse_res, Err(ParseError::PasswordRequired | ParseError::InvalidPassword)) {
-                let req = PasswordRequest {
-                    file_path: path_str.clone(),
-                    filename: filename.clone(),
                 };
 
-                if let Some(tx) = progress_sender {
-                    let _ = tx.send(IndexingProgress::PasswordPromptNeeded(req.clone()));
-                }
+                let modified_time = metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
 
-                let resp = password_handler(&req);
-                if let Some(pwd) = resp.password {
-                    if resp.save_for_future {
-                        if let Ok(encrypted) = encrypt_password(&pwd, &master_key) {
-                            let _ = self.db.save_password(
-                                &path_str,
-                                &encrypted.ciphertext_hex,
-                                &encrypted.nonce_hex,
-                            );
-                        }
+                let file_size = metadata.len() as i64;
+                let filename = file_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let file_extension = file_path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_default();
+
+                // Check if document already indexed and unchanged
+                if let Ok(Some(existing)) = self.db.get_document_by_path(&path_str) {
+                    if existing.modified_time == modified_time && existing.indexed_at.is_some() {
+                        return ProcessResult::Skipped;
                     }
-                    parse_res = parse_document(&file_path, Some(&pwd));
                 }
-            }
 
-            match parse_res {
-                Ok(doc) => {
-                    let doc_id = match self.db.upsert_document(
-                        library_id,
-                        &filename,
-                        &path_str,
-                        &file_extension,
-                        modified_time,
-                        file_size,
-                        doc.is_encrypted,
+                // Attempt initial parse without password or with saved password
+                let mut password_to_use: Option<String> = None;
+                if let Ok(Some(saved)) = self.db.get_saved_password(&path_str) {
+                    if let Ok(decrypted) = decrypt_password(
+                        &saved.encrypted_password,
+                        &saved.nonce,
+                        &master_key,
                     ) {
-                        Ok(id) => id,
-                        Err(_) => {
-                            stats.error_count += 1;
-                            continue;
-                        }
+                        password_to_use = Some(decrypted);
+                    }
+                }
+
+                let mut parse_res = parse_document(&file_path, password_to_use.as_deref());
+
+                // Handle password prompt if encrypted
+                if matches!(parse_res, Err(ParseError::PasswordRequired | ParseError::InvalidPassword)) {
+                    let req = PasswordRequest {
+                        file_path: path_str.clone(),
+                        filename: filename.clone(),
                     };
 
-                    let _ = self.db.delete_pages_for_document(doc_id);
-
-                    for page in doc.pages {
-                        let emb = self
-                            .embedding_gen
-                            .generate_embedding(&page.text)
-                            .ok();
-                        let _ = self.db.insert_page(
-                            doc_id,
-                            page.page_number,
-                            &page.text,
-                            emb.as_deref(),
-                        );
+                    if let Some(tx) = progress_sender {
+                        let _ = tx.send(IndexingProgress::PasswordPromptNeeded(req.clone()));
                     }
 
+                    let resp = password_handler(&req);
+                    if let Some(pwd) = resp.password {
+                        if resp.save_for_future {
+                            if let Ok(encrypted) = encrypt_password(&pwd, &master_key) {
+                                let _ = self.db.save_password(
+                                    &path_str,
+                                    &encrypted.ciphertext_hex,
+                                    &encrypted.nonce_hex,
+                                );
+                            }
+                        }
+                        parse_res = parse_document(&file_path, Some(&pwd));
+                    }
+                }
+
+                match parse_res {
+                    Ok(doc) => {
+                        let doc_id = match self.db.upsert_document(
+                            library_id,
+                            &filename,
+                            &path_str,
+                            &file_extension,
+                            modified_time,
+                            file_size,
+                            doc.is_encrypted,
+                        ) {
+                            Ok(id) => id,
+                            Err(_) => return ProcessResult::Error,
+                        };
+
+                        let _ = self.db.delete_pages_for_document(doc_id);
+
+                        for page in doc.pages {
+                            let emb = self
+                                .embedding_gen
+                                .generate_embedding(&page.text)
+                                .ok();
+                            let _ = self.db.insert_page(
+                                doc_id,
+                                page.page_number,
+                                &page.text,
+                                emb.as_deref(),
+                            );
+                        }
+                        ProcessResult::Indexed
+                    }
+                    Err(_) => ProcessResult::Error,
+                }
+            }));
+
+            match file_result {
+                Ok(ProcessResult::Indexed) => {
                     stats.indexed_count += 1;
                     if let Some(tx) = progress_sender {
                         let _ = tx.send(IndexingProgress::FileIndexed {
@@ -222,7 +224,17 @@ impl<K: KeyProvider> Indexer<K> {
                         });
                     }
                 }
-                Err(_) => {
+                Ok(ProcessResult::Skipped) => {
+                    stats.skipped_count += 1;
+                    if let Some(tx) = progress_sender {
+                        let _ = tx.send(IndexingProgress::FileSkipped {
+                            current,
+                            total: total_files,
+                            file_path: path_str,
+                        });
+                    }
+                }
+                Ok(ProcessResult::Error) | Err(_) => {
                     stats.error_count += 1;
                 }
             }

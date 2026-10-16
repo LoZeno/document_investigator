@@ -123,27 +123,35 @@ impl DocumentInvestigatorApp {
         let db_clone = self.db.clone();
 
         thread::spawn(move || {
-            let embedding_gen: Box<dyn EmbeddingGenerator> = match FastEmbedGenerator::try_new() {
-                Ok(generator) => Box::new(generator),
-                Err(_) => Box::new(DeterministicEmbeddingGenerator::default()),
-            };
+            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let embedding_gen: Box<dyn EmbeddingGenerator> = match FastEmbedGenerator::try_new() {
+                    Ok(generator) => Box::new(generator),
+                    Err(_) => Box::new(DeterministicEmbeddingGenerator::default()),
+                };
 
-            let key_provider = KeyringProvider;
-            let indexer = Indexer::new(db_clone, embedding_gen, key_provider);
+                let key_provider = KeyringProvider;
+                let indexer = Indexer::new(db_clone, embedding_gen, key_provider);
 
-            let _ = indexer.scan_and_index(
-                library_id,
-                &library_path,
-                Some(&prog_tx),
-                |req| {
-                    let _ = req_tx.send(req.clone());
-                    resp_rx.recv().unwrap_or(PasswordResponse {
-                        file_path: req.file_path.clone(),
-                        password: None,
-                        save_for_future: false,
-                    })
-                },
-            );
+                let _ = indexer.scan_and_index(
+                    library_id,
+                    &library_path,
+                    Some(&prog_tx),
+                    |req| {
+                        let _ = req_tx.send(req.clone());
+                        resp_rx.recv().unwrap_or(PasswordResponse {
+                            file_path: req.file_path.clone(),
+                            password: None,
+                            save_for_future: false,
+                        })
+                    },
+                );
+            }));
+
+            if res.is_err() {
+                let _ = prog_tx.send(IndexingProgress::Error(
+                    "Indexing worker thread encountered an unhandled error.".to_string(),
+                ));
+            }
         });
     }
 
@@ -177,40 +185,69 @@ impl DocumentInvestigatorApp {
         }
 
         let mut should_reload = false;
+        let mut channel_closed = false;
         if let Some(ref rx) = self.progress_rx {
-            while let Ok(msg) = rx.try_recv() {
-                match msg {
-                    IndexingProgress::Started { total_files } => {
-                        self.indexing_status_text = format!("Found {total_files} candidate documents...");
+            loop {
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        match msg {
+                            IndexingProgress::Started { total_files } => {
+                                self.indexing_status_text =
+                                    format!("Found {total_files} candidate documents...");
+                            }
+                            IndexingProgress::ScanningFile {
+                                current,
+                                total,
+                                file_path,
+                            } => {
+                                let name = Path::new(&file_path)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(&file_path);
+                                self.indexing_status_text =
+                                    format!("Indexing ({current}/{total}): {name}");
+                            }
+                            IndexingProgress::FileIndexed { current, total, .. } => {
+                                self.indexing_status_text =
+                                    format!("Indexed ({current}/{total})");
+                            }
+                            IndexingProgress::FileSkipped { current, total, .. } => {
+                                self.indexing_status_text =
+                                    format!("Skipped unmodified ({current}/{total})");
+                            }
+                            IndexingProgress::PasswordPromptNeeded(_) => {}
+                            IndexingProgress::Completed {
+                                indexed_count,
+                                skipped_count,
+                                error_count,
+                            } => {
+                                self.is_indexing = false;
+                                self.indexing_status_text = format!(
+                                    "Indexing complete: {indexed_count} indexed, {skipped_count} skipped, {error_count} errors"
+                                );
+                                self.status_message = Some(self.indexing_status_text.clone());
+                                should_reload = true;
+                            }
+                            IndexingProgress::Error(e) => {
+                                self.is_indexing = false;
+                                self.error_message = Some(e);
+                                should_reload = true;
+                            }
+                        }
                     }
-                    IndexingProgress::ScanningFile { current, total, file_path } => {
-                        let name = Path::new(&file_path)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(&file_path);
-                        self.indexing_status_text = format!("Indexing ({current}/{total}): {name}");
-                    }
-                    IndexingProgress::FileIndexed { current, total, .. } => {
-                        self.indexing_status_text = format!("Indexed ({current}/{total})");
-                    }
-                    IndexingProgress::FileSkipped { current, total, .. } => {
-                        self.indexing_status_text = format!("Skipped unmodified ({current}/{total})");
-                    }
-                    IndexingProgress::PasswordPromptNeeded(_) => {}
-                    IndexingProgress::Completed { indexed_count, skipped_count, error_count } => {
-                        self.is_indexing = false;
-                        self.indexing_status_text = format!(
-                            "Indexing complete: {indexed_count} indexed, {skipped_count} skipped, {error_count} errors"
-                        );
-                        self.status_message = Some(self.indexing_status_text.clone());
-                        should_reload = true;
-                    }
-                    IndexingProgress::Error(e) => {
-                        self.is_indexing = false;
-                        self.error_message = Some(e);
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        channel_closed = true;
+                        break;
                     }
                 }
             }
+        }
+
+        if channel_closed && self.is_indexing {
+            self.is_indexing = false;
+            self.indexing_status_text = "Indexing finished.".to_string();
+            should_reload = true;
         }
 
         if should_reload {

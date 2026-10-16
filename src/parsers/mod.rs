@@ -64,66 +64,100 @@ pub fn parse_document<P: AsRef<Path>>(
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
 
-    match ext.as_str() {
-        "pdf" => parse_pdf_file(path_ref, password),
-        "docx" => parse_docx_file(path_ref),
-        "odt" | "ods" | "odp" => parse_odt_file(path_ref),
-        "epub" => parse_epub_file(path_ref),
-        "fb2" => parse_fb2_file(path_ref),
-        "html" | "htm" => parse_html_file(path_ref),
-        "mobi" | "azw" | "azw3" | "azw4" | "lit" | "lrf" | "doc" => {
-            parse_hybrid_ebook_file(path_ref)
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match ext.as_str() {
+            "pdf" => parse_pdf_file(path_ref, password),
+            "docx" => parse_docx_file(path_ref),
+            "odt" | "ods" | "odp" => parse_odt_file(path_ref),
+            "epub" => parse_epub_file(path_ref),
+            "fb2" => parse_fb2_file(path_ref),
+            "html" | "htm" => parse_html_file(path_ref),
+            "mobi" | "azw" | "azw3" | "azw4" | "lit" | "lrf" | "doc" => {
+                parse_hybrid_ebook_file(path_ref)
+            }
+            _ => Err(ParseError::UnsupportedFormat(ext.clone())),
         }
-        _ => Err(ParseError::UnsupportedFormat(ext)),
+    }));
+
+    match res {
+        Ok(result) => result,
+        Err(_) => Err(ParseError::FormatError(format!(
+            "Internal panic caught while parsing file: {}",
+            path_ref.display()
+        ))),
     }
 }
 
 // ----------------------------------------------------------------------------
-// PDF Parser (lopdf)
+// PDF Parser (lopdf + CLI fallback)
 // ----------------------------------------------------------------------------
 
 pub fn parse_pdf_bytes(
     bytes: &[u8],
     password: Option<&str>,
 ) -> Result<ExtractedDocument, ParseError> {
-    let mut doc = lopdf::Document::load_mem(bytes)
-        .map_err(|e| ParseError::FormatError(format!("Failed to load PDF bytes: {e}")))?;
+    let load_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lopdf::Document::load_mem(bytes)
+    }));
 
-    if doc.is_encrypted() {
+    let mut doc = match load_res {
+        Ok(Ok(doc)) => doc,
+        Ok(Err(e)) => return Err(ParseError::FormatError(format!("Failed to load PDF bytes: {e}"))),
+        Err(_) => return Err(ParseError::FormatError("Panic occurred while loading PDF bytes".to_string())),
+    };
+
+    let is_encrypted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        doc.is_encrypted()
+    })).unwrap_or(false);
+
+    if is_encrypted {
         if let Some(pwd) = password {
-            if doc.decrypt(pwd.as_bytes()).is_err() {
-                return Err(ParseError::InvalidPassword);
+            let decrypt_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                doc.decrypt(pwd.as_bytes())
+            }));
+            match decrypt_res {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => return Err(ParseError::InvalidPassword),
             }
         } else {
             // Check if it decrypts with empty password (some encrypted PDFs have empty user password)
-            if doc.decrypt(b"").is_err() {
-                return Err(ParseError::PasswordRequired);
+            let decrypt_res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                doc.decrypt(b"")
+            }));
+            match decrypt_res {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => return Err(ParseError::PasswordRequired),
             }
         }
     }
 
     let mut pages = Vec::new();
-    let page_numbers = doc.get_pages();
+    let page_numbers = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        doc.get_pages()
+    })).unwrap_or_default();
+
     for (page_num, page_id) in page_numbers {
-        let text = doc.extract_text(&[page_num]).unwrap_or_else(|_| {
-            // Fallback manual content stream extraction for page
-            let mut page_text = String::new();
-            if let Ok(content_data) = doc.get_page_content(page_id) {
-                if let Ok(content) = lopdf::content::Content::decode(&content_data) {
-                    for op in content.operations {
-                        if op.operator == "Tj" || op.operator == "TJ" {
-                            for operand in op.operands {
-                                if let Ok(s) = operand.as_str() {
-                                    page_text.push_str(&String::from_utf8_lossy(s));
-                                    page_text.push(' ');
+        let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            doc.extract_text(&[page_num]).unwrap_or_else(|_| {
+                // Fallback manual content stream extraction for page
+                let mut page_text = String::new();
+                if let Ok(content_data) = doc.get_page_content(page_id) {
+                    if let Ok(content) = lopdf::content::Content::decode(&content_data) {
+                        for op in content.operations {
+                            if op.operator == "Tj" || op.operator == "TJ" {
+                                for operand in op.operands {
+                                    if let Ok(s) = operand.as_str() {
+                                        page_text.push_str(&String::from_utf8_lossy(s));
+                                        page_text.push(' ');
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            page_text
-        });
+                page_text
+            })
+        })).unwrap_or_default();
 
         let cleaned_text = text.trim().to_string();
         if !cleaned_text.is_empty() {
@@ -143,17 +177,59 @@ pub fn parse_pdf_bytes(
 
     Ok(ExtractedDocument {
         pages,
-        is_encrypted: doc.is_encrypted(),
+        is_encrypted,
     })
+}
+
+fn extract_pdf_via_cli<P: AsRef<Path>>(
+    path: P,
+    password: Option<&str>,
+) -> Result<ExtractedDocument, ParseError> {
+    if let Ok(tool) = which::which("pdftotext") {
+        let mut cmd = std::process::Command::new(tool);
+        if let Some(pwd) = password {
+            cmd.arg("-upw").arg(pwd);
+        }
+        let temp_txt = tempfile::Builder::new()
+            .suffix(".txt")
+            .tempfile()
+            .map_err(|e| ParseError::IoError(e.to_string()))?;
+        let output_path = temp_txt.path().to_path_buf();
+
+        cmd.arg(path.as_ref()).arg(&output_path);
+        if let Ok(status) = cmd.status() {
+            if status.success() {
+                if let Ok(content) = std::fs::read_to_string(&output_path) {
+                    let pages = split_text_into_logical_pages(&content, 2000);
+                    return Ok(ExtractedDocument {
+                        pages,
+                        is_encrypted: password.is_some(),
+                    });
+                }
+            }
+        }
+    }
+    Err(ParseError::FormatError("CLI PDF extraction unavailable or failed".to_string()))
 }
 
 fn parse_pdf_file<P: AsRef<Path>>(
     path: P,
     password: Option<&str>,
 ) -> Result<ExtractedDocument, ParseError> {
-    let bytes = std::fs::read(&path)
+    let path_ref = path.as_ref();
+    let bytes = std::fs::read(path_ref)
         .map_err(|e| ParseError::IoError(format!("Failed to read PDF file: {e}")))?;
-    parse_pdf_bytes(&bytes, password)
+
+    match parse_pdf_bytes(&bytes, password) {
+        Ok(doc) => Ok(doc),
+        Err(err) => {
+            if let Ok(doc) = extract_pdf_via_cli(path_ref, password) {
+                Ok(doc)
+            } else {
+                Err(err)
+            }
+        }
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -804,6 +880,13 @@ mod tests {
     fn test_mobi_header_too_short() {
         let short_data = b"BOOKMOBI";
         assert!(try_extract_mobi_text(short_data).is_none());
+    }
+
+    #[test]
+    fn test_parse_pdf_malformed_bytes_no_panic() {
+        let malformed_pdf = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R /Encrypt << /Filter /Standard /V 2 /R 3 /O () /U () /P -4 >> >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF";
+        let res = parse_pdf_bytes(malformed_pdf, None);
+        assert!(res.is_err());
     }
 
     #[test]
